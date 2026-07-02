@@ -3,11 +3,16 @@ Description=Server Monitor - Dashboard de Monitoramento
 After=network.target docker.service
 Wants=docker.service
 
+# NOTE: @@USER@@ and @@REMOTE_DIR@@ are placeholders automatically filled in
+# by deploy.py at deploy time. If installing manually, replace them yourself
+# (e.g. USER=gabe, REMOTE_DIR=/home/gabe/server-monitor) before copying this
+# file to /etc/systemd/system/monitor.service.
+
 [Service]
 Type=simple
-User=gabe
-WorkingDirectory=/opt/monitor
-ExecStart=/opt/monitor/venv/bin/python app.py
+User=@@USER@@
+WorkingDirectory=@@REMOTE_DIR@@
+ExecStart=@@REMOTE_DIR@@/venv/bin/python app.py
 Restart=always
 RestartSec=5
 StandardOutput=journal

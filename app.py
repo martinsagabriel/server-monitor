@@ -4,7 +4,7 @@ Server Monitor - Backend Flask
 Monitora CPU, Memória e Containers Docker
 """
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, Response
 import psutil
 import subprocess
 import threading
@@ -81,8 +81,25 @@ def get_disk_info():
             continue
     return disks
 
+# Guarda a última amostra para calcular taxa (KB/s) via delta entre chamadas,
+# em vez de expor só os contadores acumulados desde o boot.
+_net_prev = {"ts": None, "counters": None}
+_net_lock = threading.Lock()
+
 def get_network_info():
+    now = time.monotonic()
     net_io = psutil.net_io_counters()
+
+    with _net_lock:
+        prev, prev_ts = _net_prev["counters"], _net_prev["ts"]
+        _net_prev["counters"], _net_prev["ts"] = net_io, now
+
+    sent_rate_kbps = recv_rate_kbps = 0.0
+    if prev is not None:
+        elapsed = max(now - prev_ts, 1e-6)
+        sent_rate_kbps = round(((net_io.bytes_sent - prev.bytes_sent) / elapsed) / 1024, 2)
+        recv_rate_kbps = round(((net_io.bytes_recv - prev.bytes_recv) / elapsed) / 1024, 2)
+
     return {
         "bytes_sent_mb": round(net_io.bytes_sent / (1024**2), 2),
         "bytes_recv_mb": round(net_io.bytes_recv / (1024**2), 2),
@@ -90,6 +107,38 @@ def get_network_info():
         "packets_recv": net_io.packets_recv,
         "errin": net_io.errin,
         "errout": net_io.errout,
+        "sent_rate_kbps": max(sent_rate_kbps, 0.0),
+        "recv_rate_kbps": max(recv_rate_kbps, 0.0),
+    }
+
+# Mesma ideia para I/O de disco: taxa de leitura/escrita em MB/s.
+_diskio_prev = {"ts": None, "counters": None}
+_diskio_lock = threading.Lock()
+
+def get_disk_io_info():
+    now = time.monotonic()
+    io = psutil.disk_io_counters()
+    if io is None:
+        return {"read_mb": 0, "write_mb": 0, "read_rate_mbps": 0.0, "write_rate_mbps": 0.0,
+                "read_count": 0, "write_count": 0}
+
+    with _diskio_lock:
+        prev, prev_ts = _diskio_prev["counters"], _diskio_prev["ts"]
+        _diskio_prev["counters"], _diskio_prev["ts"] = io, now
+
+    read_rate_mbps = write_rate_mbps = 0.0
+    if prev is not None:
+        elapsed = max(now - prev_ts, 1e-6)
+        read_rate_mbps = round(((io.read_bytes - prev.read_bytes) / elapsed) / (1024**2), 2)
+        write_rate_mbps = round(((io.write_bytes - prev.write_bytes) / elapsed) / (1024**2), 2)
+
+    return {
+        "read_mb": round(io.read_bytes / (1024**2), 2),
+        "write_mb": round(io.write_bytes / (1024**2), 2),
+        "read_rate_mbps": max(read_rate_mbps, 0.0),
+        "write_rate_mbps": max(write_rate_mbps, 0.0),
+        "read_count": io.read_count,
+        "write_count": io.write_count,
     }
 
 # Cache dos dados do Docker: "docker stats" é a chamada mais pesada do app
@@ -217,15 +266,40 @@ def get_top_processes():
 def index():
     return render_template('index.html')
 
+# Valores neutros usados quando um coletor de métrica individual falha, para
+# que uma falha isolada (ex.: permissão negada em algum /proc específico) não
+# derrube o endpoint inteiro com um 500 e deixe o dashboard travado.
+_CPU_DEFAULT = {"total_percent": 0, "per_core": [], "core_count_logical": 0,
+                "core_count_physical": 0, "frequency_current": None, "frequency_max": None,
+                "user": 0, "system": 0, "idle": 0}
+_MEM_DEFAULT = {"total": 0, "available": 0, "used": 0, "free": 0, "percent": 0,
+                "total_gb": 0, "available_gb": 0, "used_gb": 0, "free_gb": 0,
+                "swap_total": 0, "swap_used": 0, "swap_free": 0, "swap_percent": 0,
+                "swap_total_gb": 0, "swap_used_gb": 0}
+_DISK_IO_DEFAULT = {"read_mb": 0, "write_mb": 0, "read_rate_mbps": 0.0,
+                     "write_rate_mbps": 0.0, "read_count": 0, "write_count": 0}
+_NET_DEFAULT = {"bytes_sent_mb": 0, "bytes_recv_mb": 0, "packets_sent": 0, "packets_recv": 0,
+                "errin": 0, "errout": 0, "sent_rate_kbps": 0.0, "recv_rate_kbps": 0.0}
+
+def safe_metric(fn, default):
+    try:
+        return fn()
+    except Exception as e:
+        app.logger.exception("Falha ao coletar metrica %s", fn.__name__)
+        if isinstance(default, dict):
+            return {**default, "error": str(e)}
+        return default
+
 @app.route('/api/metrics')
 def metrics():
     data = {
         "timestamp": datetime.datetime.now().isoformat(),
         "hostname": socket.gethostname(),
-        "cpu": get_cpu_info(),
-        "memory": get_memory_info(),
-        "disk": get_disk_info(),
-        "network": get_network_info(),
+        "cpu": safe_metric(get_cpu_info, _CPU_DEFAULT),
+        "memory": safe_metric(get_memory_info, _MEM_DEFAULT),
+        "disk": safe_metric(get_disk_info, []),
+        "disk_io": safe_metric(get_disk_io_info, _DISK_IO_DEFAULT),
+        "network": safe_metric(get_network_info, _NET_DEFAULT),
         "uptime": get_uptime(),
     }
     return jsonify(data)
@@ -241,7 +315,7 @@ def containers():
 def processes():
     return jsonify({
         "timestamp": datetime.datetime.now().isoformat(),
-        "processes": get_top_processes()
+        "processes": safe_metric(get_top_processes, [])
     })
 
 @app.route('/api/all')
@@ -249,13 +323,47 @@ def all_metrics():
     return jsonify({
         "timestamp": datetime.datetime.now().isoformat(),
         "hostname": socket.gethostname(),
-        "cpu": get_cpu_info(),
-        "memory": get_memory_info(),
-        "disk": get_disk_info(),
-        "network": get_network_info(),
+        "cpu": safe_metric(get_cpu_info, _CPU_DEFAULT),
+        "memory": safe_metric(get_memory_info, _MEM_DEFAULT),
+        "disk": safe_metric(get_disk_info, []),
+        "disk_io": safe_metric(get_disk_io_info, _DISK_IO_DEFAULT),
+        "network": safe_metric(get_network_info, _NET_DEFAULT),
         "uptime": get_uptime(),
-        "containers": get_docker_containers(),
+        "containers": safe_metric(get_docker_containers, []),
     })
+
+@app.route('/metrics')
+def prometheus_metrics():
+    """Exposes metrics in Prometheus text exposition format for scraping."""
+    cpu = get_cpu_info()
+    mem = get_memory_info()
+    disks = get_disk_info()
+    disk_io = get_disk_io_info()
+    net = get_network_info()
+
+    lines = []
+
+    def gauge(name, value, help_text):
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} gauge")
+        lines.append(f"{name} {value}")
+
+    gauge("server_monitor_cpu_percent", cpu["total_percent"], "Total CPU usage percent")
+    gauge("server_monitor_memory_percent", mem["percent"], "Memory usage percent")
+    gauge("server_monitor_swap_percent", mem["swap_percent"], "Swap usage percent")
+    gauge("server_monitor_network_sent_kbps", net["sent_rate_kbps"], "Network upload rate in KB/s")
+    gauge("server_monitor_network_recv_kbps", net["recv_rate_kbps"], "Network download rate in KB/s")
+    gauge("server_monitor_disk_read_mbps", disk_io["read_rate_mbps"], "Disk read rate in MB/s")
+    gauge("server_monitor_disk_write_mbps", disk_io["write_rate_mbps"], "Disk write rate in MB/s")
+
+    lines.append("# HELP server_monitor_disk_usage_percent Disk usage percent per mountpoint")
+    lines.append("# TYPE server_monitor_disk_usage_percent gauge")
+    for d in disks:
+        mountpoint = d["mountpoint"].replace('\\', '\\\\').replace('"', '\\"')
+        lines.append(f'server_monitor_disk_usage_percent{{mountpoint="{mountpoint}"}} {d["percent"]}')
+
+    body = "\n".join(lines) + "\n"
+    return Response(body, mimetype="text/plain; version=0.0.4")
 
 def get_uptime():
     try:

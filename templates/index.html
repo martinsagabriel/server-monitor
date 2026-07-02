@@ -150,7 +150,7 @@
 <body>
 
 <header>
-  <h1>&#x1F5A5; Server Monitor</h1>
+  <h1>Server Monitor</h1>
   <div class="header-info">
     <span id="hostnameDisplay">carregando...</span>
     <span id="uptimeDisplay">uptime: --</span>
@@ -205,6 +205,18 @@
     <div class="card">
       <div class="card-title"><span class="icon">&#x1F4CA;</span> Histórico Memória (%)</div>
       <div class="chart-wrapper"><canvas id="memChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Linha 2b: Gráficos Rede + Disco I/O -->
+  <div class="grid-mid">
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F310;</span> Histórico Rede (KB/s)</div>
+      <div class="chart-wrapper"><canvas id="netChart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F4BE;</span> Histórico Disco I/O (MB/s)</div>
+      <div class="chart-wrapper"><canvas id="diskIoChart"></canvas></div>
     </div>
   </div>
 
@@ -268,6 +280,10 @@
       <div class="card-title"><span class="icon">&#x1F310;</span> Rede</div>
       <div id="netInfo"><div class="no-data">Carregando...</div></div>
       <div style="margin-top:16px;">
+        <div class="card-title"><span class="icon">&#x1F4BE;</span> Disco I/O</div>
+        <div id="diskIoInfo"><div class="no-data">Carregando...</div></div>
+      </div>
+      <div style="margin-top:16px;">
         <div class="card-title"><span class="icon">&#x23F1;</span> Uptime do Sistema</div>
         <div class="uptime-display" id="uptimeCard">--</div>
         <div style="font-size:.75rem; color:var(--muted); margin-top:4px;" id="bootTime">Boot: --</div>
@@ -283,6 +299,10 @@ const MAX_HIST = 60;
 // History arrays
 let cpuHistory = Array(MAX_HIST).fill(0);
 let memHistory = Array(MAX_HIST).fill(0);
+let netSentHistory = Array(MAX_HIST).fill(0);
+let netRecvHistory = Array(MAX_HIST).fill(0);
+let diskReadHistory = Array(MAX_HIST).fill(0);
+let diskWriteHistory = Array(MAX_HIST).fill(0);
 let labels = Array(MAX_HIST).fill('');
 
 // ── Chart setup ──────────────────────────────────────────────────────────────
@@ -321,6 +341,49 @@ function makeChart(id, color, fillColor) {
 const cpuChart = makeChart('cpuChart', '#58a6ff', 'rgba(88,166,255,.12)');
 const memChart = makeChart('memChart', '#3fb950', 'rgba(63,185,80,.12)');
 
+// Gráficos de taxa (KB/s, MB/s): sem teto fixo em 100 e com legenda para
+// distinguir as duas séries (upload/download, leitura/escrita).
+const rateChartDefaults = {
+  type: 'line',
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: {
+      legend: { display: true, labels: { color: '#8b949e', font: { size: 10 }, boxWidth: 10 } },
+      tooltip: { mode: 'index', intersect: false,
+        backgroundColor:'#161b22', borderColor:'#30363d', borderWidth:1,
+        titleColor:'#8b949e', bodyColor:'#e6edf3' }
+    },
+    scales: {
+      x: { display: false },
+      y: { min: 0, grid: { color: 'rgba(48,54,61,.5)' }, ticks: { color: '#8b949e', font:{ size:10 } } }
+    }
+  }
+};
+
+function makeRateChart(id, series) {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    ...rateChartDefaults,
+    data: {
+      labels: [...labels],
+      datasets: series.map(s => ({
+        label: s.label, data: Array(MAX_HIST).fill(0),
+        borderColor: s.color, backgroundColor: s.fill, borderWidth: 2,
+        fill: true, tension: 0.3, pointRadius: 0, pointHoverRadius: 3,
+      }))
+    }
+  });
+}
+
+const netChart = makeRateChart('netChart', [
+  { label: 'Upload KB/s', color: '#bc8cff', fill: 'rgba(188,140,255,.10)' },
+  { label: 'Download KB/s', color: '#58a6ff', fill: 'rgba(88,166,255,.10)' },
+]);
+const diskIoChart = makeRateChart('diskIoChart', [
+  { label: 'Leitura MB/s', color: '#3fb950', fill: 'rgba(63,185,80,.10)' },
+  { label: 'Escrita MB/s', color: '#d29922', fill: 'rgba(210,153,34,.10)' },
+]);
+
 function pushHistory(arr, val) {
   arr.push(val);
   if (arr.length > MAX_HIST) arr.shift();
@@ -329,6 +392,12 @@ function pushHistory(arr, val) {
 function updateChart(chart, history) {
   chart.data.labels = labels;
   chart.data.datasets[0].data = [...history];
+  chart.update('none');
+}
+
+function updateMultiChart(chart, histories) {
+  chart.data.labels = labels;
+  histories.forEach((h, i) => { chart.data.datasets[i].data = [...h]; });
   chart.update('none');
 }
 
@@ -392,7 +461,7 @@ function renderMetrics(d) {
   const now = new Date().toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
   // Header
-  document.getElementById('hostnameDisplay').textContent = '&#x1F5A5; ' + (d.hostname || '--');
+  document.getElementById('hostnameDisplay').textContent = (d.hostname || '--');
   if (d.uptime) {
     document.getElementById('uptimeDisplay').textContent = 'uptime: ' + d.uptime.formatted;
     document.getElementById('uptimeCard').textContent = d.uptime.formatted;
@@ -463,11 +532,31 @@ function renderMetrics(d) {
   // Network
   const net = d.network;
   document.getElementById('netInfo').innerHTML = `
-    <div class="net-row"><span class="net-key">&#x2B06; Enviado</span><span class="net-val">${net.bytes_sent_mb.toFixed(2)} MB</span></div>
-    <div class="net-row"><span class="net-key">&#x2B07; Recebido</span><span class="net-val">${net.bytes_recv_mb.toFixed(2)} MB</span></div>
+    <div class="net-row"><span class="net-key">&#x2B06; Taxa de Envio</span><span class="net-val">${(net.sent_rate_kbps||0).toFixed(1)} KB/s</span></div>
+    <div class="net-row"><span class="net-key">&#x2B07; Taxa de Recebimento</span><span class="net-val">${(net.recv_rate_kbps||0).toFixed(1)} KB/s</span></div>
+    <div class="net-row"><span class="net-key">Total Enviado</span><span class="net-val">${net.bytes_sent_mb.toFixed(2)} MB</span></div>
+    <div class="net-row"><span class="net-key">Total Recebido</span><span class="net-val">${net.bytes_recv_mb.toFixed(2)} MB</span></div>
     <div class="net-row"><span class="net-key">Pacotes Enviados</span><span class="net-val">${net.packets_sent.toLocaleString()}</span></div>
     <div class="net-row"><span class="net-key">Pacotes Recebidos</span><span class="net-val">${net.packets_recv.toLocaleString()}</span></div>
     <div class="net-row"><span class="net-key">Erros (in/out)</span><span class="net-val">${net.errin} / ${net.errout}</span></div>`;
+
+  pushHistory(netSentHistory, net.sent_rate_kbps || 0);
+  pushHistory(netRecvHistory, net.recv_rate_kbps || 0);
+  updateMultiChart(netChart, [netSentHistory, netRecvHistory]);
+
+  // Disk I/O
+  const diskIo = d.disk_io;
+  if (diskIo && document.getElementById('diskIoInfo')) {
+    document.getElementById('diskIoInfo').innerHTML = `
+      <div class="net-row"><span class="net-key">&#x1F4D6; Leitura</span><span class="net-val">${(diskIo.read_rate_mbps||0).toFixed(2)} MB/s</span></div>
+      <div class="net-row"><span class="net-key">&#x1F4DD; Escrita</span><span class="net-val">${(diskIo.write_rate_mbps||0).toFixed(2)} MB/s</span></div>
+      <div class="net-row"><span class="net-key">Total Lido</span><span class="net-val">${diskIo.read_mb.toFixed(1)} MB</span></div>
+      <div class="net-row"><span class="net-key">Total Escrito</span><span class="net-val">${diskIo.write_mb.toFixed(1)} MB</span></div>`;
+
+    pushHistory(diskReadHistory, diskIo.read_rate_mbps || 0);
+    pushHistory(diskWriteHistory, diskIo.write_rate_mbps || 0);
+    updateMultiChart(diskIoChart, [diskReadHistory, diskWriteHistory]);
+  }
 
   // Containers
   const containers = d.containers || [];

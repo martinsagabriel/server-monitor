@@ -7,17 +7,41 @@ import sys
 import time
 import getpass
 
-HOST = os.environ.get("MONITOR_DEPLOY_HOST", "192.168.15.101")
-PORT = int(os.environ.get("MONITOR_DEPLOY_PORT", "22"))
-USER = os.environ.get("MONITOR_DEPLOY_USER", "gabe")
-PASS = os.environ.get("MONITOR_DEPLOY_PASS") or getpass.getpass(f"Senha SSH para {USER}@{HOST}: ")
-REMOTE_DIR = "/opt/monitor"
+def load_env_file(path=None):
+    """Carrega variáveis de um arquivo .env (formato KEY=VALUE) para o
+    ambiente, sem sobrescrever variáveis já exportadas no shell. Não requer
+    a dependência python-dotenv."""
+    env_path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.isfile(env_path):
+        return
 
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
+
+load_env_file()
+
+HOST = os.environ.get("MONITOR_DEPLOY_HOST") or input("Host: ").strip()
+PORT = int(os.environ.get("MONITOR_DEPLOY_PORT") or input("Porta [22]: ").strip() or "22")
+USER = os.environ.get("MONITOR_DEPLOY_USER") or input(f"Usuario SSH para {HOST}: ").strip()
+PASS = os.environ.get("MONITOR_DEPLOY_PASS") or getpass.getpass(f"Senha SSH para {USER}@{HOST}: ")
+
+# Instala dentro da home do usuário (evita precisar de sudo/root em /opt).
+REMOTE_DIR = os.environ.get("MONITOR_DEPLOY_REMOTE_DIR") or f"/home/{USER}/server-monitor"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Caminhos locais (neste computador) -> caminho relativo no servidor remoto.
 FILES = {
-    "app.py":                 "/tmp/monitor_deploy/app.py",
-    "requirements.txt":       "/tmp/monitor_deploy/requirements.txt",
-    "monitor.service":        "/tmp/monitor_deploy/monitor.service",
-    "templates/index.html":   "/tmp/monitor_deploy/templates/index.html",
+    "app.py":                 os.path.join(BASE_DIR, "app.py"),
+    "requirements.txt":       os.path.join(BASE_DIR, "requirements.txt"),
+    "templates/index.html":   os.path.join(BASE_DIR, "templates", "index.html"),
 }
 
 def banner(msg):
@@ -27,10 +51,20 @@ def ok(msg):   print(f"\033[1;32m  ✔ {msg}\033[0m")
 def info(msg): print(f"\033[0;36m  ► {msg}\033[0m")
 def err(msg):  print(f"\033[1;31m  ✘ {msg}\033[0m")
 
+def render_service_file():
+    """Le o monitor.service local e substitui os placeholders @@USER@@ e
+    @@REMOTE_DIR@@ pelos valores reais deste deploy."""
+    local_path = os.path.join(BASE_DIR, "monitor.service")
+    with open(local_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return content.replace("@@USER@@", USER).replace("@@REMOTE_DIR@@", REMOTE_DIR)
+
 def run(ssh, cmd, sudo=False, timeout=120):
+    display_cmd = cmd
     if sudo:
         cmd = f"echo '{PASS}' | sudo -S sh -c '{cmd}'"
-    info(f"$ {cmd[:100]}{'...' if len(cmd)>100 else ''}")
+        display_cmd = f"echo '****' | sudo -S sh -c '{display_cmd}'"
+    info(f"$ {display_cmd[:100]}{'...' if len(display_cmd)>100 else ''}")
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout, get_pty=True)
     out = stdout.read().decode("utf-8", errors="replace").strip()
     er  = stderr.read().decode("utf-8", errors="replace").strip()
@@ -54,14 +88,12 @@ def main():
         sys.exit(1)
     ok("Conexão SSH estabelecida")
 
-    # ── Criar estrutura de diretórios ──────────────────────────────────────────
+    # ── Criar estrutura de diretórios ────────────────────────────────────────────────────────────────────────────────
     banner("Criando diretórios")
-    rc, _ = run(ssh, f"mkdir -p {REMOTE_DIR}/templates", sudo=True)
-    ok("Diretórios criados em /opt/monitor")
+    rc, _ = run(ssh, f"mkdir -p {REMOTE_DIR}/templates")
+    ok(f"Diretórios criados em {REMOTE_DIR}")
 
-    run(ssh, f"chown -R {USER}:{USER} {REMOTE_DIR}", sudo=True)
-
-    # ── Upload dos arquivos via SFTP ───────────────────────────────────────────
+    # ── Upload dos arquivos via SFTP ────────────────────────────────────────────────────────
     banner("Enviando arquivos")
     sftp = ssh.open_sftp()
     for remote_rel, local_path in FILES.items():
@@ -71,6 +103,15 @@ def main():
             ok(f"Enviado: {remote_rel}")
         except Exception as e:
             err(f"Erro ao enviar {remote_rel}: {e}")
+
+    try:
+        service_content = render_service_file()
+        with sftp.open(f"{REMOTE_DIR}/monitor.service", "w") as f:
+            f.write(service_content)
+        ok("Enviado: monitor.service (personalizado com User/WorkingDirectory)")
+    except Exception as e:
+        err(f"Erro ao enviar monitor.service: {e}")
+
     sftp.close()
 
     # ── Verificar/instalar Python3 e pip ──────────────────────────────────────
@@ -95,7 +136,7 @@ def main():
     rc, _ = run(ssh, f"{REMOTE_DIR}/venv/bin/pip install --upgrade pip -q", timeout=120)
     rc, out = run(ssh, f"{REMOTE_DIR}/venv/bin/pip install -r {REMOTE_DIR}/requirements.txt -q", timeout=180)
     if rc == 0:
-        ok("Flask, flask-cors e psutil instalados")
+        ok("Flask e psutil instalados")
     else:
         err("Erro na instalação de dependências")
 
