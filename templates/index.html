@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Server Monitor</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --blue: #58a6ff;
+      --purple: #bc8cff;
+      --cyan: #39d353;
+      --accent: #1f6feb;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; min-height:100vh; }
+
+    header {
+      background:var(--card);
+      border-bottom:1px solid var(--border);
+      padding:16px 24px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      position:sticky; top:0; z-index:100;
+    }
+    header h1 { font-size:1.3rem; font-weight:700; color:var(--blue); display:flex; align-items:center; gap:10px; }
+    header h1::before { content:''; display:inline-block; width:12px; height:12px; background:var(--green); border-radius:50%; box-shadow:0 0 8px var(--green); animation:pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:.4; } }
+    .header-info { display:flex; gap:20px; font-size:.8rem; color:var(--muted); }
+    .header-info span { display:flex; align-items:center; gap:5px; }
+    .badge { background:var(--accent); color:#fff; border-radius:4px; padding:2px 8px; font-size:.75rem; }
+
+    main { padding:20px 24px; max-width:1600px; margin:0 auto; }
+
+    .grid-top { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:20px; }
+    .grid-mid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+    .grid-bot { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+    .grid-full { display:grid; grid-template-columns:1fr; gap:16px; margin-bottom:20px; }
+
+    .card {
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:10px;
+      padding:18px;
+      position:relative;
+      overflow:hidden;
+    }
+    .card-title {
+      font-size:.7rem;
+      text-transform:uppercase;
+      letter-spacing:.08em;
+      color:var(--muted);
+      margin-bottom:10px;
+      display:flex;
+      align-items:center;
+      gap:6px;
+    }
+    .card-title .icon { font-size:1rem; }
+    .big-value { font-size:2.4rem; font-weight:700; line-height:1; }
+    .big-sub { font-size:.78rem; color:var(--muted); margin-top:4px; }
+    .color-green { color:var(--green); }
+    .color-yellow { color:var(--yellow); }
+    .color-red { color:var(--red); }
+    .color-blue { color:var(--blue); }
+    .color-purple { color:var(--purple); }
+
+    /* Progress bar */
+    .progress-wrap { margin-top:12px; }
+    .progress-label { display:flex; justify-content:space-between; font-size:.75rem; color:var(--muted); margin-bottom:5px; }
+    .progress-bar { height:8px; background:#21262d; border-radius:4px; overflow:hidden; }
+    .progress-fill { height:100%; border-radius:4px; transition:width .6s ease; }
+    .fill-green { background:linear-gradient(90deg,#2ea043,#3fb950); }
+    .fill-yellow { background:linear-gradient(90deg,#d29922,#e3b341); }
+    .fill-red { background:linear-gradient(90deg,#b91c1c,#f85149); }
+    .fill-blue { background:linear-gradient(90deg,#1158c7,#58a6ff); }
+
+    /* Chart containers */
+    .chart-wrapper { position:relative; height:200px; }
+
+    /* Cores CPU */
+    .cores-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:8px; margin-top:12px; }
+    .core-item { background:#0d1117; border-radius:6px; padding:8px; text-align:center; border:1px solid var(--border); }
+    .core-item .core-label { font-size:.65rem; color:var(--muted); margin-bottom:4px; }
+    .core-item .core-val { font-size:1rem; font-weight:700; }
+
+    /* Containers table */
+    .table-wrap { overflow-x:auto; margin-top:8px; }
+    table { width:100%; border-collapse:collapse; font-size:.78rem; }
+    thead th { padding:8px 10px; text-align:left; font-size:.7rem; color:var(--muted); font-weight:600;
+      text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid var(--border); background:#0d1117; position:sticky; top:0; }
+    tbody tr { border-bottom:1px solid #21262d; transition:background .15s; }
+    tbody tr:hover { background:#1c2128; }
+    tbody td { padding:9px 10px; vertical-align:middle; }
+    .state-running { color:var(--green); font-weight:600; }
+    .state-exited { color:var(--red); }
+    .state-paused { color:var(--yellow); }
+    .state-other { color:var(--muted); }
+    .pill { border-radius:20px; padding:2px 8px; font-size:.68rem; font-weight:600; display:inline-block; }
+    .pill-green { background:rgba(63,185,80,.15); color:var(--green); border:1px solid rgba(63,185,80,.3); }
+    .pill-red   { background:rgba(248,81,73,.15);  color:var(--red);   border:1px solid rgba(248,81,73,.3); }
+    .pill-yellow{ background:rgba(210,153,34,.15); color:var(--yellow); border:1px solid rgba(210,153,34,.3); }
+    .pill-gray  { background:rgba(139,148,158,.1); color:var(--muted); border:1px solid rgba(139,148,158,.2); }
+
+    /* Processes */
+    .proc-bar-wrap { width:100%; background:#21262d; border-radius:3px; height:5px; overflow:hidden; }
+    .proc-bar-fill { height:100%; border-radius:3px; }
+
+    /* Disk */
+    .disk-list { display:flex; flex-direction:column; gap:10px; margin-top:8px; }
+    .disk-item { background:#0d1117; border-radius:6px; padding:10px; border:1px solid var(--border); }
+    .disk-header { display:flex; justify-content:space-between; font-size:.75rem; margin-bottom:6px; }
+    .disk-mount { font-weight:600; color:var(--text); }
+    .disk-info { color:var(--muted); }
+
+    /* Network */
+    .net-row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #21262d; font-size:.8rem; }
+    .net-row:last-child { border:none; }
+    .net-key { color:var(--muted); }
+    .net-val { font-weight:600; color:var(--blue); }
+
+    /* Uptime */
+    .uptime-display { font-size:1.4rem; font-weight:700; color:var(--cyan); margin-top:6px; }
+
+    /* No data */
+    .no-data { color:var(--muted); font-size:.85rem; padding:20px 0; text-align:center; }
+
+    /* Last update */
+    #lastUpdate { font-size:.7rem; color:var(--muted); }
+    #connStatus { width:8px; height:8px; border-radius:50%; background:var(--yellow); display:inline-block; }
+    #connStatus.ok { background:var(--green); }
+    #connStatus.err { background:var(--red); }
+
+    @media(max-width:1200px){ .grid-top{grid-template-columns:repeat(2,1fr);} }
+    @media(max-width:800px){
+      .grid-top{grid-template-columns:1fr 1fr;}
+      .grid-mid,.grid-bot{grid-template-columns:1fr;}
+    }
+    @media(max-width:500px){ .grid-top{grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>&#x1F5A5; Server Monitor</h1>
+  <div class="header-info">
+    <span id="hostnameDisplay">carregando...</span>
+    <span id="uptimeDisplay">uptime: --</span>
+    <span><span id="connStatus"></span>&nbsp;<span id="lastUpdate">--</span></span>
+    <span class="badge">Live</span>
+  </div>
+</header>
+
+<main>
+  <!-- Linha 1: Cards resumo -->
+  <div class="grid-top">
+    <div class="card">
+      <div class="card-title"><span class="icon">⚡</span> CPU Total</div>
+      <div class="big-value" id="cpuTotalVal">--%</div>
+      <div class="big-sub" id="cpuSubInfo">-- núcleos</div>
+      <div class="progress-wrap">
+        <div class="progress-bar"><div class="progress-fill fill-blue" id="cpuBar" style="width:0%"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F4BE;</span> Memória RAM</div>
+      <div class="big-value" id="memUsedVal">-- GB</div>
+      <div class="big-sub" id="memSubInfo">de -- GB usados</div>
+      <div class="progress-wrap">
+        <div class="progress-label"><span id="memPct">--%</span><span id="memAvail">--</span></div>
+        <div class="progress-bar"><div class="progress-fill fill-green" id="memBar" style="width:0%"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F300;</span> Swap</div>
+      <div class="big-value" id="swapUsedVal">-- GB</div>
+      <div class="big-sub" id="swapSubInfo">de -- GB</div>
+      <div class="progress-wrap">
+        <div class="progress-label"><span id="swapPct">--%</span></div>
+        <div class="progress-bar"><div class="progress-fill fill-yellow" id="swapBar" style="width:0%"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F433;</span> Containers Docker</div>
+      <div class="big-value color-blue" id="dockerRunning">--</div>
+      <div class="big-sub" id="dockerTotal">de -- total</div>
+      <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;" id="dockerPills"></div>
+    </div>
+  </div>
+
+  <!-- Linha 2: Gráficos CPU + Memória -->
+  <div class="grid-mid">
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F4C8;</span> Histórico CPU (%)</div>
+      <div class="chart-wrapper"><canvas id="cpuChart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F4CA;</span> Histórico Memória (%)</div>
+      <div class="chart-wrapper"><canvas id="memChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Linha 3: Núcleos CPU + Disco -->
+  <div class="grid-mid">
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F9E0;</span> Uso por Núcleo</div>
+      <div class="cores-grid" id="coresGrid"></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F4BE;</span> Discos</div>
+      <div class="disk-list" id="diskList"><div class="no-data">Carregando...</div></div>
+    </div>
+  </div>
+
+  <!-- Linha 4: Containers Docker -->
+  <div class="grid-full">
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F433;</span> Containers Docker</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>Imagem</th>
+              <th>Estado</th>
+              <th>CPU</th>
+              <th>Memória</th>
+              <th>Rede I/O</th>
+              <th>Portas</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="containersTable"><tr><td colspan="8" class="no-data">Carregando...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Linha 5: Processos + Rede -->
+  <div class="grid-bot">
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F4CB;</span> Top Processos (CPU)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>PID</th>
+              <th>Nome</th>
+              <th>Usuário</th>
+              <th>CPU %</th>
+              <th>Mem %</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="procTable"><tr><td colspan="6" class="no-data">Carregando...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F310;</span> Rede</div>
+      <div id="netInfo"><div class="no-data">Carregando...</div></div>
+      <div style="margin-top:16px;">
+        <div class="card-title"><span class="icon">&#x23F1;</span> Uptime do Sistema</div>
+        <div class="uptime-display" id="uptimeCard">--</div>
+        <div style="font-size:.75rem; color:var(--muted); margin-top:4px;" id="bootTime">Boot: --</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = '';
+const MAX_HIST = 60;
+
+// History arrays
+let cpuHistory = Array(MAX_HIST).fill(0);
+let memHistory = Array(MAX_HIST).fill(0);
+let labels = Array(MAX_HIST).fill('');
+
+// ── Chart setup ──────────────────────────────────────────────────────────────
+const chartDefaults = {
+  type: 'line',
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false,
+      backgroundColor:'#161b22', borderColor:'#30363d', borderWidth:1,
+      titleColor:'#8b949e', bodyColor:'#e6edf3' } },
+    scales: {
+      x: { display: false },
+      y: { min: 0, max: 100, grid: { color: 'rgba(48,54,61,.5)' },
+           ticks: { color: '#8b949e', font:{ size:10 }, callback:v=>v+'%' } }
+    }
+  }
+};
+
+function makeChart(id, color, fillColor) {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    ...chartDefaults,
+    data: {
+      labels: [...labels],
+      datasets: [{
+        data: [...cpuHistory],
+        borderColor: color, borderWidth: 2,
+        backgroundColor: fillColor,
+        fill: true, tension: 0.3,
+        pointRadius: 0, pointHoverRadius:3,
+      }]
+    }
+  });
+}
+
+const cpuChart = makeChart('cpuChart', '#58a6ff', 'rgba(88,166,255,.12)');
+const memChart = makeChart('memChart', '#3fb950', 'rgba(63,185,80,.12)');
+
+function pushHistory(arr, val) {
+  arr.push(val);
+  if (arr.length > MAX_HIST) arr.shift();
+}
+
+function updateChart(chart, history) {
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = [...history];
+  chart.update('none');
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function pctColor(v) {
+  if (v < 60) return '#3fb950';
+  if (v < 85) return '#d29922';
+  return '#f85149';
+}
+function pctFillClass(v) {
+  if (v < 60) return 'fill-green';
+  if (v < 85) return 'fill-yellow';
+  return 'fill-red';
+}
+function setBar(el, pct) {
+  el.style.width = Math.min(pct,100)+'%';
+  el.className = 'progress-fill ' + pctFillClass(pct);
+}
+function stateClass(s) {
+  if (!s) return 'state-other';
+  const sl = s.toLowerCase();
+  if (sl === 'running') return 'state-running';
+  if (sl === 'exited') return 'state-exited';
+  if (sl === 'paused') return 'state-paused';
+  return 'state-other';
+}
+function pillClass(s) {
+  if (!s) return 'pill pill-gray';
+  const sl = s.toLowerCase();
+  if (sl === 'running') return 'pill pill-green';
+  if (sl === 'exited') return 'pill pill-red';
+  if (sl === 'paused') return 'pill pill-yellow';
+  return 'pill pill-gray';
+}
+
+// ── Fetch & render metrics ────────────────────────────────────────────────────
+async function fetchMetrics() {
+  try {
+    const r = await fetch(API + '/api/all');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    renderMetrics(d);
+    document.getElementById('connStatus').className = 'ok';
+    document.getElementById('lastUpdate').textContent = 'Atualizado: ' + new Date().toLocaleTimeString('pt-BR');
+  } catch(e) {
+    document.getElementById('connStatus').className = 'err';
+    document.getElementById('lastUpdate').textContent = 'Erro de conexão';
+  }
+}
+
+async function fetchProcesses() {
+  try {
+    const r = await fetch(API + '/api/processes');
+    if (!r.ok) return;
+    const d = await r.json();
+    renderProcesses(d.processes || []);
+  } catch {}
+}
+
+function renderMetrics(d) {
+  const now = new Date().toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+
+  // Header
+  document.getElementById('hostnameDisplay').textContent = '&#x1F5A5; ' + (d.hostname || '--');
+  if (d.uptime) {
+    document.getElementById('uptimeDisplay').textContent = 'uptime: ' + d.uptime.formatted;
+    document.getElementById('uptimeCard').textContent = d.uptime.formatted;
+    document.getElementById('bootTime').textContent = 'Boot: ' + (d.uptime.boot_time || '--').replace('T',' ').split('.')[0];
+  }
+
+  // CPU
+  const cpu = d.cpu;
+  const cpuPct = cpu.total_percent;
+  document.getElementById('cpuTotalVal').textContent = cpuPct.toFixed(1) + '%';
+  document.getElementById('cpuTotalVal').style.color = pctColor(cpuPct);
+  document.getElementById('cpuSubInfo').textContent = cpu.core_count_logical + ' lógicos / ' + cpu.core_count_physical + ' físicos'
+    + (cpu.frequency_current ? ' · ' + cpu.frequency_current + ' MHz' : '');
+  setBar(document.getElementById('cpuBar'), cpuPct);
+
+  pushHistory(cpuHistory, cpuPct);
+  pushHistory(labels, now);
+  updateChart(cpuChart, cpuHistory);
+
+  // Cores
+  const cg = document.getElementById('coresGrid');
+  cg.innerHTML = '';
+  (cpu.per_core || []).forEach((v, i) => {
+    const el = document.createElement('div');
+    el.className = 'core-item';
+    el.innerHTML = `<div class="core-label">CPU ${i}</div><div class="core-val" style="color:${pctColor(v)}">${v.toFixed(0)}%</div>
+    <div style="margin-top:4px;"><div class="proc-bar-wrap"><div class="proc-bar-fill" style="width:${v}%;background:${pctColor(v)}"></div></div></div>`;
+    cg.appendChild(el);
+  });
+
+  // Memory
+  const mem = d.memory;
+  document.getElementById('memUsedVal').textContent = mem.used_gb.toFixed(2) + ' GB';
+  document.getElementById('memUsedVal').style.color = pctColor(mem.percent);
+  document.getElementById('memSubInfo').textContent = `de ${mem.total_gb.toFixed(2)} GB total`;
+  document.getElementById('memPct').textContent = mem.percent.toFixed(1) + '%';
+  document.getElementById('memAvail').textContent = mem.available_gb.toFixed(2) + ' GB livres';
+  setBar(document.getElementById('memBar'), mem.percent);
+
+  pushHistory(memHistory, mem.percent);
+  updateChart(memChart, memHistory);
+
+  // Swap
+  document.getElementById('swapUsedVal').textContent = mem.swap_used_gb.toFixed(2) + ' GB';
+  document.getElementById('swapSubInfo').textContent = `de ${mem.swap_total_gb.toFixed(2)} GB`;
+  document.getElementById('swapPct').textContent = mem.swap_percent.toFixed(1) + '%';
+  setBar(document.getElementById('swapBar'), mem.swap_percent);
+
+  // Disk
+  const diskList = document.getElementById('diskList');
+  diskList.innerHTML = '';
+  (d.disk || []).forEach(disk => {
+    const el = document.createElement('div');
+    el.className = 'disk-item';
+    el.innerHTML = `
+      <div class="disk-header">
+        <span class="disk-mount">${disk.mountpoint}</span>
+        <span class="disk-info">${disk.device} &middot; ${disk.fstype}</span>
+      </div>
+      <div class="progress-label" style="font-size:.72rem; color:var(--muted); display:flex; justify-content:space-between; margin-bottom:4px;">
+        <span>${disk.used_gb.toFixed(1)} GB usados de ${disk.total_gb.toFixed(1)} GB</span>
+        <span style="color:${pctColor(disk.percent)}">${disk.percent.toFixed(1)}%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill ${pctFillClass(disk.percent)}" style="width:${disk.percent}%"></div></div>`;
+    diskList.appendChild(el);
+  });
+
+  // Network
+  const net = d.network;
+  document.getElementById('netInfo').innerHTML = `
+    <div class="net-row"><span class="net-key">&#x2B06; Enviado</span><span class="net-val">${net.bytes_sent_mb.toFixed(2)} MB</span></div>
+    <div class="net-row"><span class="net-key">&#x2B07; Recebido</span><span class="net-val">${net.bytes_recv_mb.toFixed(2)} MB</span></div>
+    <div class="net-row"><span class="net-key">Pacotes Enviados</span><span class="net-val">${net.packets_sent.toLocaleString()}</span></div>
+    <div class="net-row"><span class="net-key">Pacotes Recebidos</span><span class="net-val">${net.packets_recv.toLocaleString()}</span></div>
+    <div class="net-row"><span class="net-key">Erros (in/out)</span><span class="net-val">${net.errin} / ${net.errout}</span></div>`;
+
+  // Containers
+  const containers = d.containers || [];
+  const running = containers.filter(c => c.state === 'running').length;
+  document.getElementById('dockerRunning').textContent = running;
+  document.getElementById('dockerTotal').textContent = `de ${containers.length} total`;
+
+  const pills = document.getElementById('dockerPills');
+  pills.innerHTML = '';
+  ['running','exited','paused'].forEach(state => {
+    const cnt = containers.filter(c => (c.state||'').toLowerCase() === state).length;
+    if (cnt > 0 || state === 'running') {
+      const p = document.createElement('span');
+      p.className = pillClass(state);
+      p.textContent = `${state}: ${cnt}`;
+      pills.appendChild(p);
+    }
+  });
+
+  const tbody = document.getElementById('containersTable');
+  if (!containers.length || containers[0]?.error) {
+    tbody.innerHTML = `<tr><td colspan="8" class="no-data">&#x1F433; Docker não disponível ou sem containers</td></tr>`;
+  } else {
+    tbody.innerHTML = containers.map(c => `
+      <tr>
+        <td><strong>${c.name || '--'}</strong><br><span style="color:var(--muted);font-size:.68rem;">${(c.id||'').substring(0,12)}</span></td>
+        <td style="color:var(--muted)">${c.image || '--'}</td>
+        <td><span class="${pillClass(c.state)}">${c.state || '--'}</span></td>
+        <td style="color:${c.state==='running' ? '#58a6ff' : 'var(--muted)'}">${c.cpu_percent || '0%'}</td>
+        <td>${c.mem_usage || '--'} <span style="color:var(--muted)">(${c.mem_percent||''})</span></td>
+        <td style="color:var(--muted);font-size:.72rem;">${c.net_io || '--'}</td>
+        <td style="color:var(--muted);font-size:.72rem;max-width:150px;overflow:hidden;text-overflow:ellipsis;">${c.ports || '-'}</td>
+        <td style="color:var(--muted);font-size:.72rem;">${(c.status||'').substring(0,30)}</td>
+      </tr>`).join('');
+  }
+}
+
+function renderProcesses(procs) {
+  const tbody = document.getElementById('procTable');
+  if (!procs.length) { tbody.innerHTML = '<tr><td colspan="6" class="no-data">Nenhum processo</td></tr>'; return; }
+  tbody.innerHTML = procs.map(p => `
+    <tr>
+      <td style="color:var(--muted)">${p.pid}</td>
+      <td><strong>${p.name||'--'}</strong></td>
+      <td style="color:var(--muted)">${p.username||'--'}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="color:${pctColor(p.cpu_percent||0)};min-width:38px">${(p.cpu_percent||0).toFixed(1)}%</span>
+          <div class="proc-bar-wrap" style="width:60px"><div class="proc-bar-fill" style="width:${Math.min(p.cpu_percent||0,100)}%;background:${pctColor(p.cpu_percent||0)}"></div></div>
+        </div>
+      </td>
+      <td style="color:${pctColor(p.memory_percent||0)}">${(p.memory_percent||0).toFixed(1)}%</td>
+      <td><span class="${p.status==='running'?'state-running':'state-other'}">${p.status||'--'}</span></td>
+    </tr>`).join('');
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+// Pausa o polling quando a aba está em background: evita gerar carga
+// (docker stats, leitura de processos, etc.) no servidor sem necessidade.
+let metricsTimer = null;
+let processesTimer = null;
+
+function startPolling() {
+  if (!metricsTimer) {
+    fetchMetrics();
+    metricsTimer = setInterval(fetchMetrics, 3000);
+  }
+  if (!processesTimer) {
+    fetchProcesses();
+    processesTimer = setInterval(fetchProcesses, 5000);
+  }
+}
+
+function stopPolling() {
+  clearInterval(metricsTimer);
+  clearInterval(processesTimer);
+  metricsTimer = null;
+  processesTimer = null;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopPolling();
+  else startPolling();
+});
+
+startPolling();
+</script>
+</body>
+</html>

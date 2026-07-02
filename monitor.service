@@ -1,0 +1,26 @@
+[Unit]
+Description=Server Monitor - Dashboard de Monitoramento
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=gabe
+WorkingDirectory=/opt/monitor
+ExecStart=/opt/monitor/venv/bin/python app.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+# Limites de recursos: o monitor roda direto no host (fora do Docker) e não
+# deve competir por recursos com os serviços que ele monitora.
+MemoryMax=150M
+MemoryHigh=100M
+CPUQuota=25%
+Nice=10
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
