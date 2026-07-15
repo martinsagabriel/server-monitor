@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Server Monitor</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script>
+    // Aplica o tema salvo antes do primeiro paint, evitando flash de tema errado.
+    (function () {
+      var t = localStorage.getItem('monitor-theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
   <style>
     :root {
       --bg: #0d1117;
@@ -20,8 +27,22 @@
       --cyan: #39d353;
       --accent: #1f6feb;
     }
+    html[data-theme="light"] {
+      --bg: #f6f8fa;
+      --card: #ffffff;
+      --border: #d0d7de;
+      --text: #1f2328;
+      --muted: #57606a;
+      --green: #1a7f37;
+      --yellow: #9a6700;
+      --red: #cf222e;
+      --blue: #0969da;
+      --purple: #8250df;
+      --cyan: #116329;
+      --accent: #0969da;
+    }
     * { margin:0; padding:0; box-sizing:border-box; }
-    body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; min-height:100vh; }
+    body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; min-height:100vh; transition:background .2s ease,color .2s ease; }
 
     header {
       background:var(--card);
@@ -35,13 +56,20 @@
     header h1 { font-size:1.3rem; font-weight:700; color:var(--blue); display:flex; align-items:center; gap:10px; }
     header h1::before { content:''; display:inline-block; width:12px; height:12px; background:var(--green); border-radius:50%; box-shadow:0 0 8px var(--green); animation:pulse 2s infinite; }
     @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:.4; } }
-    .header-info { display:flex; gap:20px; font-size:.8rem; color:var(--muted); }
+    .header-info { display:flex; gap:20px; font-size:.8rem; color:var(--muted); align-items:center; }
     .header-info span { display:flex; align-items:center; gap:5px; }
     .badge { background:var(--accent); color:#fff; border-radius:4px; padding:2px 8px; font-size:.75rem; }
 
+    .theme-toggle {
+      background:transparent; border:1px solid var(--border); color:var(--text);
+      border-radius:6px; width:30px; height:30px; display:flex; align-items:center; justify-content:center;
+      cursor:pointer; font-size:1rem; line-height:1; transition:background .15s ease,border-color .15s ease;
+    }
+    .theme-toggle:hover { background:var(--border); }
+
     main { padding:20px 24px; max-width:1600px; margin:0 auto; }
 
-    .grid-top { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:20px; }
+    .grid-top { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; margin-bottom:20px; }
     .grid-mid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
     .grid-bot { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
     .grid-full { display:grid; grid-template-columns:1fr; gap:16px; margin-bottom:20px; }
@@ -82,6 +110,7 @@
     .fill-yellow { background:linear-gradient(90deg,#d29922,#e3b341); }
     .fill-red { background:linear-gradient(90deg,#b91c1c,#f85149); }
     .fill-blue { background:linear-gradient(90deg,#1158c7,#58a6ff); }
+    .fill-purple { background:linear-gradient(90deg,#6e40c9,#bc8cff); }
 
     /* Chart containers */
     .chart-wrapper { position:relative; height:200px; }
@@ -139,12 +168,9 @@
     #connStatus.ok { background:var(--green); }
     #connStatus.err { background:var(--red); }
 
-    @media(max-width:1200px){ .grid-top{grid-template-columns:repeat(2,1fr);} }
     @media(max-width:800px){
-      .grid-top{grid-template-columns:1fr 1fr;}
       .grid-mid,.grid-bot{grid-template-columns:1fr;}
     }
-    @media(max-width:500px){ .grid-top{grid-template-columns:1fr;} }
   </style>
 </head>
 <body>
@@ -156,6 +182,7 @@
     <span id="uptimeDisplay">uptime: --</span>
     <span><span id="connStatus"></span>&nbsp;<span id="lastUpdate">--</span></span>
     <span class="badge">Live</span>
+    <button class="theme-toggle" id="themeToggle" type="button" title="Alternar tema claro/escuro" aria-label="Alternar tema claro/escuro">&#x1F319;</button>
   </div>
 </header>
 
@@ -194,6 +221,14 @@
       <div class="big-sub" id="dockerTotal">de -- total</div>
       <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;" id="dockerPills"></div>
     </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F5A5;</span> GPU</div>
+      <div class="big-value" id="gpuUsageVal">--%</div>
+      <div class="big-sub" id="gpuSubInfo">GPU não detectada</div>
+      <div class="progress-wrap">
+        <div class="progress-bar"><div class="progress-fill fill-purple" id="gpuBar" style="width:0%"></div></div>
+      </div>
+    </div>
   </div>
 
   <!-- Linha 2: Gráficos CPU + Memória -->
@@ -217,6 +252,18 @@
     <div class="card">
       <div class="card-title"><span class="icon">&#x1F4BE;</span> Histórico Disco I/O (MB/s)</div>
       <div class="chart-wrapper"><canvas id="diskIoChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Linha 2c: Gráfico GPU + Detalhes GPU -->
+  <div class="grid-mid">
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F5A5;</span> Histórico GPU (%)</div>
+      <div class="chart-wrapper"><canvas id="gpuChart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F5A5;</span> Detalhes GPU</div>
+      <div class="disk-list" id="gpuList"><div class="no-data">Carregando...</div></div>
     </div>
   </div>
 
@@ -303,6 +350,8 @@ let netSentHistory = Array(MAX_HIST).fill(0);
 let netRecvHistory = Array(MAX_HIST).fill(0);
 let diskReadHistory = Array(MAX_HIST).fill(0);
 let diskWriteHistory = Array(MAX_HIST).fill(0);
+let gpuUtilHistory = Array(MAX_HIST).fill(0);
+let gpuMemHistory = Array(MAX_HIST).fill(0);
 let labels = Array(MAX_HIST).fill('');
 
 // ── Chart setup ──────────────────────────────────────────────────────────────
@@ -382,6 +431,46 @@ const netChart = makeRateChart('netChart', [
 const diskIoChart = makeRateChart('diskIoChart', [
   { label: 'Leitura MB/s', color: '#3fb950', fill: 'rgba(63,185,80,.10)' },
   { label: 'Escrita MB/s', color: '#d29922', fill: 'rgba(210,153,34,.10)' },
+]);
+
+// Gráfico de GPU: percentuais (uso e VRAM), então usa teto fixo em 100 como
+// cpuChart/memChart, mas com legenda pois são duas séries.
+const gpuChartDefaults = {
+  type: 'line',
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: {
+      legend: { display: true, labels: { color: '#8b949e', font: { size: 10 }, boxWidth: 10 } },
+      tooltip: { mode: 'index', intersect: false,
+        backgroundColor:'#161b22', borderColor:'#30363d', borderWidth:1,
+        titleColor:'#8b949e', bodyColor:'#e6edf3' }
+    },
+    scales: {
+      x: { display: false },
+      y: { min: 0, max: 100, grid: { color: 'rgba(48,54,61,.5)' },
+           ticks: { color: '#8b949e', font:{ size:10 }, callback:v=>v+'%' } }
+    }
+  }
+};
+
+function makeGpuChart(id, series) {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    ...gpuChartDefaults,
+    data: {
+      labels: [...labels],
+      datasets: series.map(s => ({
+        label: s.label, data: Array(MAX_HIST).fill(0),
+        borderColor: s.color, backgroundColor: s.fill, borderWidth: 2,
+        fill: true, tension: 0.3, pointRadius: 0, pointHoverRadius: 3,
+      }))
+    }
+  });
+}
+
+const gpuChart = makeGpuChart('gpuChart', [
+  { label: 'Uso GPU %', color: '#bc8cff', fill: 'rgba(188,140,255,.10)' },
+  { label: 'VRAM %', color: '#39d353', fill: 'rgba(57,211,83,.10)' },
 ]);
 
 function pushHistory(arr, val) {
@@ -558,6 +647,43 @@ function renderMetrics(d) {
     updateMultiChart(diskIoChart, [diskReadHistory, diskWriteHistory]);
   }
 
+  // GPU
+  const gpu = d.gpu || { available: false, gpus: [] };
+  const gpuList = document.getElementById('gpuList');
+  if (gpu.available && gpu.gpus.length) {
+    const avgUtil = gpu.gpus.reduce((s,g)=>s+g.gpu_percent,0) / gpu.gpus.length;
+    const avgMem = gpu.gpus.reduce((s,g)=>s+g.memory_percent,0) / gpu.gpus.length;
+    document.getElementById('gpuUsageVal').textContent = avgUtil.toFixed(1) + '%';
+    document.getElementById('gpuUsageVal').style.color = pctColor(avgUtil);
+    document.getElementById('gpuSubInfo').textContent = gpu.gpus.length > 1
+      ? `${gpu.gpus.length} GPUs · ${gpu.gpus[0].name}`
+      : gpu.gpus[0].name;
+    setBar(document.getElementById('gpuBar'), avgUtil);
+
+    pushHistory(gpuUtilHistory, avgUtil);
+    pushHistory(gpuMemHistory, avgMem);
+    updateMultiChart(gpuChart, [gpuUtilHistory, gpuMemHistory]);
+
+    gpuList.innerHTML = gpu.gpus.map(g => `
+      <div class="disk-item">
+        <div class="disk-header">
+          <span class="disk-mount">GPU ${g.index} · ${g.name}</span>
+          <span class="disk-info">${g.temperature_c.toFixed(0)}&deg;C${g.power_draw_w!=null ? ' · '+g.power_draw_w.toFixed(0)+'W' : ''}</span>
+        </div>
+        <div class="progress-label" style="font-size:.72rem; color:var(--muted); display:flex; justify-content:space-between; margin-bottom:4px;">
+          <span>Uso: ${g.gpu_percent.toFixed(0)}% · VRAM: ${g.memory_used_mb.toFixed(0)} / ${g.memory_total_mb.toFixed(0)} MB</span>
+          <span style="color:${pctColor(g.memory_percent)}">${g.memory_percent.toFixed(1)}%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill ${pctFillClass(g.memory_percent)}" style="width:${g.memory_percent}%"></div></div>
+      </div>`).join('');
+  } else {
+    document.getElementById('gpuUsageVal').textContent = 'N/D';
+    document.getElementById('gpuUsageVal').style.color = 'var(--muted)';
+    document.getElementById('gpuSubInfo').textContent = 'GPU não detectada';
+    setBar(document.getElementById('gpuBar'), 0);
+    gpuList.innerHTML = '<div class="no-data">Nenhuma GPU NVIDIA detectada</div>';
+  }
+
   // Containers
   const containers = d.containers || [];
   const running = containers.filter(c => c.state === 'running').length;
@@ -643,6 +769,25 @@ document.addEventListener('visibilitychange', () => {
 });
 
 startPolling();
+
+// ── Tema claro/escuro ─────────────────────────────────────────────────────────
+const THEME_KEY = 'monitor-theme';
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.innerHTML = theme === 'light' ? '&#x1F319;' : '&#x2600;&#xFE0F;';
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  const next = current === 'light' ? 'dark' : 'light';
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+}
+
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 </script>
 </body>
 </html>

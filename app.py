@@ -141,6 +141,53 @@ def get_disk_io_info():
         "write_count": io.write_count,
     }
 
+# GPU (NVIDIA): usa o utilitário nvidia-smi via subprocess, igual ao padrão
+# já usado para docker. Se não houver GPU NVIDIA ou o binário não existir,
+# retorna "available": False sem quebrar o resto do dashboard.
+_GPU_QUERY_FIELDS = [
+    "index", "name", "utilization.gpu", "utilization.memory",
+    "memory.used", "memory.total", "temperature.gpu", "power.draw", "power.limit",
+]
+
+def get_gpu_info():
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=" + ",".join(_GPU_QUERY_FIELDS),
+             "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {"available": False, "gpus": []}
+
+    if result.returncode != 0:
+        return {"available": False, "gpus": []}
+
+    gpus = []
+    for line in result.stdout.strip().split('\n'):
+        if not line.strip():
+            continue
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) < len(_GPU_QUERY_FIELDS):
+            continue
+        try:
+            gpus.append({
+                "index": int(parts[0]),
+                "name": parts[1],
+                "gpu_percent": float(parts[2]),
+                "memory_percent": float(parts[3]),
+                "memory_used_mb": float(parts[4]),
+                "memory_total_mb": float(parts[5]),
+                "temperature_c": float(parts[6]),
+                "power_draw_w": float(parts[7]) if parts[7] not in ("", "N/A", "[N/A]") else None,
+                "power_limit_w": float(parts[8]) if parts[8] not in ("", "N/A", "[N/A]") else None,
+            })
+        except ValueError:
+            continue
+
+    return {"available": len(gpus) > 0, "gpus": gpus}
+
 # Cache dos dados do Docker: "docker stats" é a chamada mais pesada do app
 # (spawna processo + aguarda amostragem). Reaproveitar o resultado por alguns
 # segundos evita repetir esse custo a cada request/aba aberta no dashboard.
@@ -280,6 +327,7 @@ _DISK_IO_DEFAULT = {"read_mb": 0, "write_mb": 0, "read_rate_mbps": 0.0,
                      "write_rate_mbps": 0.0, "read_count": 0, "write_count": 0}
 _NET_DEFAULT = {"bytes_sent_mb": 0, "bytes_recv_mb": 0, "packets_sent": 0, "packets_recv": 0,
                 "errin": 0, "errout": 0, "sent_rate_kbps": 0.0, "recv_rate_kbps": 0.0}
+_GPU_DEFAULT = {"available": False, "gpus": []}
 
 def safe_metric(fn, default):
     try:
@@ -300,6 +348,7 @@ def metrics():
         "disk": safe_metric(get_disk_info, []),
         "disk_io": safe_metric(get_disk_io_info, _DISK_IO_DEFAULT),
         "network": safe_metric(get_network_info, _NET_DEFAULT),
+        "gpu": safe_metric(get_gpu_info, _GPU_DEFAULT),
         "uptime": get_uptime(),
     }
     return jsonify(data)
@@ -328,6 +377,7 @@ def all_metrics():
         "disk": safe_metric(get_disk_info, []),
         "disk_io": safe_metric(get_disk_io_info, _DISK_IO_DEFAULT),
         "network": safe_metric(get_network_info, _NET_DEFAULT),
+        "gpu": safe_metric(get_gpu_info, _GPU_DEFAULT),
         "uptime": get_uptime(),
         "containers": safe_metric(get_docker_containers, []),
     })
@@ -361,6 +411,20 @@ def prometheus_metrics():
     for d in disks:
         mountpoint = d["mountpoint"].replace('\\', '\\\\').replace('"', '\\"')
         lines.append(f'server_monitor_disk_usage_percent{{mountpoint="{mountpoint}"}} {d["percent"]}')
+
+    gpu_info = get_gpu_info()
+    if gpu_info.get("gpus"):
+        lines.append("# HELP server_monitor_gpu_percent GPU utilization percent")
+        lines.append("# TYPE server_monitor_gpu_percent gauge")
+        lines.append("# HELP server_monitor_gpu_memory_percent GPU memory utilization percent")
+        lines.append("# TYPE server_monitor_gpu_memory_percent gauge")
+        lines.append("# HELP server_monitor_gpu_temperature_celsius GPU temperature in Celsius")
+        lines.append("# TYPE server_monitor_gpu_temperature_celsius gauge")
+        for g in gpu_info["gpus"]:
+            idx = g["index"]
+            lines.append(f'server_monitor_gpu_percent{{gpu="{idx}"}} {g["gpu_percent"]}')
+            lines.append(f'server_monitor_gpu_memory_percent{{gpu="{idx}"}} {g["memory_percent"]}')
+            lines.append(f'server_monitor_gpu_temperature_celsius{{gpu="{idx}"}} {g["temperature_c"]}')
 
     body = "\n".join(lines) + "\n"
     return Response(body, mimetype="text/plain; version=0.0.4")

@@ -123,15 +123,24 @@ def main():
     else:
         ok("Python3 disponível")
 
+    # Garante o pacote python3-venv (fornece o ensurepip usado por "python3 -m
+    # venv"). Em distros como Ubuntu 24.04, python3 pode já estar presente sem
+    # esse pacote, o que faz "python3 -m venv" criar um virtualenv sem pip.
+    run(ssh, "apt-get update -qq && apt-get install -y python3-venv python3-pip", sudo=True, timeout=180)
+
     rc, _ = run(ssh, "python3 -m pip --version")
-    if rc != 0:
-        run(ssh, "apt-get install -y python3-pip", sudo=True, timeout=120)
-    ok("pip3 disponível")
+    if rc == 0:
+        ok("pip3 disponível")
+    else:
+        info("pip3 do sistema ainda indisponível (seguindo com o pip do virtualenv)")
 
     # ── Criar virtualenv e instalar dependências ───────────────────────────────
     banner("Criando virtualenv e instalando dependências")
-    run(ssh, f"python3 -m venv {REMOTE_DIR}/venv")
-    ok("Virtualenv criado")
+    rc, _ = run(ssh, f"rm -rf {REMOTE_DIR}/venv && python3 -m venv {REMOTE_DIR}/venv", timeout=60)
+    if rc == 0:
+        ok("Virtualenv criado")
+    else:
+        err("Falha ao criar virtualenv")
 
     rc, _ = run(ssh, f"{REMOTE_DIR}/venv/bin/pip install --upgrade pip -q", timeout=120)
     rc, out = run(ssh, f"{REMOTE_DIR}/venv/bin/pip install -r {REMOTE_DIR}/requirements.txt -q", timeout=180)
